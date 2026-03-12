@@ -1,6 +1,6 @@
 """
-Fusion Engine
-Combines visual + voice scores into a final lie score with history tracking.
+Fusion Engine — 4-signal weighted score
+Visual 35% | Voice 30% | Emotion 20% | Heart Rate 15%
 """
 
 import time
@@ -10,8 +10,10 @@ import collections
 import numpy as np
 
 
-VISUAL_WEIGHT = 0.50
-VOICE_WEIGHT  = 0.50
+VISUAL_WEIGHT   = 0.35
+VOICE_WEIGHT    = 0.30
+EMOTION_WEIGHT  = 0.20
+HR_WEIGHT       = 0.15
 
 LABELS = [
     (25,  "TRUTH",     "#22c55e"),
@@ -30,21 +32,22 @@ def score_label(score):
 
 class FusionEngine:
     def __init__(self, history_len=300):
-        self.history = collections.deque(maxlen=history_len)  # (timestamp, score)
-        self.question_scores = []   # list of {question, avg_score, timestamp}
+        self.history         = collections.deque(maxlen=history_len)
+        self.question_scores = []
         self._current_question = None
         self._question_start   = None
         self._question_buffer  = []
 
-    def update(self, visual_score: float, voice_score: float) -> float:
-        """Compute fused score and record it."""
-        fused = VISUAL_WEIGHT * visual_score + VOICE_WEIGHT * voice_score
+    def update(self, visual_score: float, voice_score: float,
+               emotion_score: float = 0.0, hr_score: float = 0.0) -> float:
+        fused = (VISUAL_WEIGHT  * visual_score
+               + VOICE_WEIGHT   * voice_score
+               + EMOTION_WEIGHT * emotion_score
+               + HR_WEIGHT      * hr_score)
         fused = float(np.clip(fused, 0, 100))
         self.history.append((time.time(), fused))
-
         if self._current_question is not None:
             self._question_buffer.append(fused)
-
         return fused
 
     def start_question(self, question: str):
@@ -67,10 +70,9 @@ class FusionEngine:
         self._question_buffer  = []
 
     def get_recent_scores(self, seconds=30):
-        """Return (times_relative, scores) arrays for the last N seconds."""
-        now = time.time()
+        now    = time.time()
         cutoff = now - seconds
-        pts = [(t, s) for t, s in self.history if t >= cutoff]
+        pts    = [(t, s) for t, s in self.history if t >= cutoff]
         if not pts:
             return np.array([]), np.array([])
         times  = np.array([t - now for t, _ in pts])
@@ -78,23 +80,22 @@ class FusionEngine:
         return times, scores
 
     def current_score(self):
-        if self.history:
-            return self.history[-1][1]
-        return 0.0
+        return self.history[-1][1] if self.history else 0.0
 
     def save_report(self, path="reports"):
         os.makedirs(path, exist_ok=True)
-        ts   = time.strftime("%Y%m%d_%H%M%S")
+        ts    = time.strftime("%Y%m%d_%H%M%S")
         fname = os.path.join(path, f"session_{ts}.json")
-        data = {
-            "session_time": ts,
+        scores = [s for _, s in self.history]
+        data  = {
+            "session_time":     ts,
             "question_results": self.question_scores,
-            "score_history": [(round(t, 2), round(s, 1)) for t, s in self.history],
+            "score_history":    [(round(t, 2), round(s, 1)) for t, s in self.history],
             "summary": {
-                "avg_score": round(float(np.mean([s for _, s in self.history])), 1) if self.history else 0,
-                "max_score": round(float(np.max([s for _, s in self.history])), 1)  if self.history else 0,
+                "avg_score":       round(float(np.mean(scores)), 1) if scores else 0,
+                "max_score":       round(float(np.max(scores)), 1)  if scores else 0,
                 "total_questions": len(self.question_scores),
-            }
+            },
         }
         with open(fname, "w") as f:
             json.dump(data, f, indent=2)
